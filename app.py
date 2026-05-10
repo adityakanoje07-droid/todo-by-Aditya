@@ -1,44 +1,68 @@
-<!DOCTYPE html>
-<html lang="en">
+import os
+from flask import Flask, render_template, request, redirect, url_for
+from flask_sqlalchemy import SQLAlchemy
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Todo App</title>
+app = Flask(__name__)
 
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/semantic-ui@2.4.2/dist/semantic.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/semantic-ui@2.4.2/dist/semantic.min.js"></script>
-</head>
+# Production Best Practice: Use environment variable for the database.
+database_uri = os.environ.get('POSTGRES_URL') or os.environ.get('DATABASE_URL')
 
-<body>
-    <div style="margin-top: 50px;" class="ui container">
-        <h1 class="ui center aligned header">To Do App</h1>
+if database_uri and database_uri.startswith("postgres://"):
+    # Fix for older PostgreSQL URIs (SQLAlchemy 1.4+ requires postgresql://)
+    database_uri = database_uri.replace("postgres://", "postgresql://", 1)
+elif not database_uri:
+    # On Vercel, the filesystem is read-only except for /tmp.
+    if os.environ.get('VERCEL'):
+        database_uri = 'sqlite:////tmp/db.sqlite'
+    else:
+        # Fallback to local SQLite database for local development.
+        database_uri = 'sqlite:///db.sqlite'
 
-        <form class="ui form" action="/add" method="post">
-            <div class="field">
-                <label>Todo Title</label>
-                <input type="text" name="title" placeholder="Enter Todo..."><br>
-            </div>
-            <button class="ui blue button" type="submit">Add</button>
-        </form>
+app.config['SQLALCHEMY_DATABASE_URI'] = database_uri
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
-        <hr>
 
-        {% for todo in todo_list %}
-        <div class="ui segment">
-            <p class="ui big header">{{todo.id }} | {{ todo.title }}</p>
+class Todo(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(100))
+    complete = db.Column(db.Boolean)
 
-            {% if todo.complete == False %}
-            <span class="ui gray label">Not Complete</span>
-            {% else %}
-            <span class="ui green label">Completed</span>
-            {% endif %}
+# Ensure tables are created when the application starts
+# This is necessary for serverless environments like Vercel where __main__ does not run
+with app.app_context():
+    db.create_all()
 
-            <a class="ui blue button" href="/update/{{ todo.id }}">Update</a>
-            <a class="ui red button" href="/delete/{{ todo.id }}">Delete</a>
-        </div>
-        {% endfor %}
-    </div>
-</body>
 
-</html>
+@app.route("/")
+def home():
+    todo_list = Todo.query.all()
+    return render_template("base.html", todo_list=todo_list)
+
+
+@app.route("/add", methods=["POST"])
+def add():
+    title = request.form.get("title")
+    new_todo = Todo(title=title, complete=False)
+    db.session.add(new_todo)
+    db.session.commit()
+    return redirect(url_for("home"))
+
+
+@app.route("/update/<int:todo_id>")
+def update(todo_id):
+    todo = Todo.query.filter_by(id=todo_id).first()
+    todo.complete = not todo.complete
+    db.session.commit()
+    return redirect(url_for("home"))
+
+
+@app.route("/delete/<int:todo_id>")
+def delete(todo_id):
+    todo = Todo.query.filter_by(id=todo_id).first()
+    db.session.delete(todo)
+    db.session.commit()
+    return redirect(url_for("home"))
+
+if __name__ == "__main__":
+    app.run(debug=True)
